@@ -7,13 +7,16 @@ int min_trigger_time = 200; // must hold state for at least this many millisecon
 int max_trigger_time = 3000; // this many milliseconds to switch to the next state before resetting
 
 int play_folder = 1;
-int play_song = 3;
+int PROGMEM play_song = 3;
+int max_song_number = 10;
 
 //
 // Script setup
 //
 #include <MD_YX5300.h>
 #include <HardwareSerial.h>
+#include <OneButton.h>
+#include <EEPROM.h>
 
 HardwareSerial MP3Serial(1);
 MD_YX5300 mp3(MP3Serial);
@@ -26,14 +29,19 @@ int trigger_counter = 0;
 
 int fsr_reading; // current reading
 int last_fsr_reading; // previous reading
-bool blinking_red = false; // whether the LED should blink or not
+int blinking_red; // whether the LED should blink or not
+int blink_speed; // how fast should we blink
 
 // Set up pins
 const int fsr_pin = 34;
 const int yellow_pin = 32;
 const int red_pin = 33;
+const int ext_pin = 26;
 const int mp3_tx = 16;
 const int mp3_rx = 17;
+const int stop_button_pin = 18;
+
+OneButton stop_button = OneButton(stop_button_pin, true, true);
 
 void setup() {
 	Serial.begin(115200);
@@ -42,12 +50,35 @@ void setup() {
   // set up LEDs
   pinMode(yellow_pin, OUTPUT);
   pinMode(red_pin, OUTPUT);
+  pinMode(ext_pin, OUTPUT);
 
   // set up MP3 player
   MP3Serial.begin(9600, SERIAL_8N1, mp3_tx, mp3_rx);
   mp3.begin();
   // mp3.setSynchronous(true);
   // mp3.playFolderRepeat(1);
+
+  blinking_red = false;
+
+  stop_button.attachClick([]() {
+    Serial.println("click");
+    cancel();
+  });
+
+  stop_button.attachLongPressStart([]() {
+    play_song++;
+    if(play_song > max_song_number) { // loop back around after 10
+      play_song = 1;
+    }
+  });
+
+  stop_button.attachDoubleClick([]() {
+    Serial.println("double click");
+    play_song--;
+    if(play_song < 1) { // loop back around if too low
+      play_song = max_song_number;
+    }
+  });
 }
 
 void loop() {
@@ -66,10 +97,11 @@ void loop() {
 	
   // clean up loop for next time
   blink_red();
+  stop_button.tick();
   reset_counter();
   
   last_fsr_reading = fsr_reading;
-  delay(100);
+  delay(10);
 }
 
 void triggered_on(unsigned long trigger_time) { 
@@ -105,18 +137,34 @@ void set_trigger_counter(int count) {
   // default everything to off for all cases including 0 (start)
   blinking_red = false;
   digitalWrite(red_pin, LOW);
+  digitalWrite(ext_pin, LOW);
 
   switch (count) {
     case 1:
       digitalWrite(red_pin, HIGH);
+      digitalWrite(ext_pin, HIGH);
       break;
     case 2:
       blinking_red = true;
+      blink_speed = 200;
       break;
     case 3:
+      blink_speed = 100;
       triggered();
       break;
+     case 4:
+      blink_speed = 50;
+      break;
+     case 5:
+      // go ahead and reset
+      cancel();
+      break;
   }
+}
+
+void cancel() {
+  set_trigger_counter(0);
+  mp3.playStop();
 }
 
 void reset_counter() {
@@ -131,19 +179,23 @@ void reset_counter() {
 }
 
 void blink_red() {
-  const int blink_speed = 300;
   static unsigned long last_change;
   static int current_state = LOW;
 
-  if(blinking_red) {
+  if(blinking_red) { 
+    
+    // now do the actual blinking
     if (current_time > last_change + blink_speed) {
       if(current_state == LOW) {
         digitalWrite(red_pin, HIGH);
+        digitalWrite(ext_pin, HIGH);
         current_state = HIGH;
       } else {
         digitalWrite(red_pin, LOW);
+        digitalWrite(ext_pin, LOW);
         current_state = LOW;
       }
+      last_change = current_time;
     }
   }
 }
@@ -151,8 +203,6 @@ void blink_red() {
 // do the things we came here to do
 void triggered() {
   Serial.println("Triggered");
+  
   mp3.playSpecific(play_folder, play_song);
-
-  // go ahead and reset
-  set_trigger_counter(0);
 }
